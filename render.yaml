@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: listing-reviewer
+    runtime: docker
+    plan: starter            # persistent disks need a paid plan; free plan works but data resets on redeploy
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in the Render dashboard, never commit it
+      - key: DATABASE_PATH
+        value: /data/app.db
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
