@@ -1,6 +1,8 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+
+export type Database = DatabaseSync;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS listings (
@@ -48,13 +50,26 @@ CREATE INDEX IF NOT EXISTS idx_history_listing ON history(listing_id, id);
 CREATE INDEX IF NOT EXISTS idx_reviews_listing ON reviews(listing_id, id);
 `;
 
-export function openDb(file: string): Database.Database {
+export function openDb(file: string): Database {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  const db = new DatabaseSync(file);
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
   return db;
+}
+
+/** node:sqlite's DatabaseSync has no built-in transaction helper, unlike better-sqlite3. */
+export function runInTransaction<T>(db: Database, fn: () => T): T {
+  db.exec("BEGIN");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 function defaultPath(): string {
@@ -63,9 +78,9 @@ function defaultPath(): string {
   return path.join(process.cwd(), "data", "app.db");
 }
 
-const g = globalThis as unknown as { __db?: Database.Database };
+const g = globalThis as unknown as { __db?: Database };
 
-export function getDb(): Database.Database {
+export function getDb(): Database {
   if (!g.__db) g.__db = openDb(defaultPath());
   return g.__db;
 }

@@ -1,4 +1,5 @@
-import type Database from "better-sqlite3";
+import type { Database } from "./db";
+import { runInTransaction } from "./db";
 import { reviewListing, type ReviewOptions, type ReviewResult } from "./reviewer";
 import { log } from "./logger";
 import type { Finding, FindingDecision, Listing, ValidationIssue } from "./types";
@@ -12,6 +13,10 @@ export interface StoredListing extends Listing {
   revised: Partial<Record<Revisable, string>>;
   status: string;
   createdAt: string;
+}
+
+export interface ListingSummary extends StoredListing {
+  summary: { total: number; resolved: number; blocking: number };
 }
 
 export interface StoredReview {
@@ -117,7 +122,7 @@ export function normalizeInput(x: Partial<Listing>): Listing {
 }
 
 export class Store {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database) {}
 
   private addHistory(e: {
     listingId: number;
@@ -176,6 +181,25 @@ export class Store {
 
   listListings(): StoredListing[] {
     return (this.db.prepare("SELECT * FROM listings ORDER BY id DESC").all() as Row[]).map(mapListing);
+  }
+
+  /** Listings plus a lightweight finding/resolution summary from their latest review, for list views. */
+  listSummaries(): ListingSummary[] {
+    return this.listListings().map((l) => {
+      const review = this.latestReview(l.id);
+      if (!review) return { ...l, summary: { total: 0, resolved: 0, blocking: 0 } };
+      const d = this.decisions(review.id);
+      const pending = (f: Finding) => (d[f.id]?.decision ?? "pending") === "pending";
+      return {
+        ...l,
+        summary: {
+          total: review.findings.length,
+          resolved: review.findings.filter((f) => !pending(f)).length,
+          blocking: review.findings.filter((f) => (f.severity === "critical" || f.severity === "major") && pending(f))
+            .length,
+        },
+      };
+    });
   }
 
   latestReview(listingId: number): StoredReview | null {
@@ -294,7 +318,7 @@ export class Store {
     const field = finding.field;
     const canApply = (REVISABLE as readonly string[]).includes(field);
 
-    const tx = this.db.transaction(() => {
+    runInTransaction(this.db, () => {
       let before: string | null = null;
       let after: string | null = null;
       if (canApply) before = this.currentValue(listing, field as Revisable);
@@ -335,7 +359,6 @@ export class Store {
         actor,
       });
     });
-    tx();
     return { listing: this.getListing(listing.id)!, decisions: this.decisions(reviewId) };
   }
 

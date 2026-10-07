@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
 import {
   ReviewOutputSchema,
   extractJson,
@@ -57,7 +58,7 @@ export function buildUserPrompt(l: Listing, sections: PolicySection[]): string {
 
 export function anthropicCall(): LlmCall {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const model = process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5";
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
   return async (system, user) => {
     const res = await client.messages.create({
       model,
@@ -69,6 +70,27 @@ export function anthropicCall(): LlmCall {
       .map((b) => (b.type === "text" ? b.text : ""))
       .join("");
   };
+}
+
+export function geminiCall(): LlmCall {
+  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  return async (system, user) => {
+    const res = await client.models.generateContent({
+      model,
+      contents: user,
+      config: { systemInstruction: system },
+    });
+    return res.text ?? "";
+  };
+}
+
+/** Picks whichever provider has a key configured; Gemini takes priority if both are set
+ * (its free tier makes it the more likely one to actually be funded/working). */
+function configuredLlmCall(): LlmCall | null {
+  if (process.env.GEMINI_API_KEY) return geminiCall();
+  if (process.env.ANTHROPIC_API_KEY) return anthropicCall();
+  return null;
 }
 
 async function parseWithRetry(
@@ -116,15 +138,15 @@ export async function reviewListing(
   const sections = retrieveSections(listing);
   const warnings: string[] = [];
 
-  const live = !opts.forceMock && (opts.llm || process.env.ANTHROPIC_API_KEY);
+  const call = opts.llm ?? configuredLlmCall();
+  const live = !opts.forceMock && call;
   let raw: RawFinding[];
   let mode: ReviewResult["mode"] = live ? "live" : "mock";
 
   if (live) {
     try {
-      const call = opts.llm ?? anthropicCall();
       raw = await parseWithRetry(
-        call,
+        call!,
         SYSTEM_PROMPT,
         buildUserPrompt(listing, sections),
       );

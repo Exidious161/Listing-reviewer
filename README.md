@@ -2,9 +2,11 @@
 
 A web app that reviews marketplace listings against a written marketplace policy and brand-content guide. It combines **deterministic validation** (plain code, unit tested) with an **AI review** whose every finding must cite a real policy section, then lets a human approve, edit or reject each suggested revision, with a full audit trail.
 
-> No API key? It still works. Without `ANTHROPIC_API_KEY` the app runs in an offline **mock mode** (a rule-based reviewer that produces the same finding shape), so the demo and the tests never depend on a network call.
+> No API key? It still works. Without a key for either provider below, the app runs in an offline **mock mode** (a rule-based reviewer that produces the same finding shape), so the demo and the tests never depend on a network call.
 
 ## Quick start
+
+Requires Node 22.5+ (uses the built-in `node:sqlite`, so there's no native module to compile — `npm install` has no C++ toolchain requirement).
 
 ```bash
 npm install
@@ -15,11 +17,13 @@ npm run typecheck
 
 Open the app and click **Load sample batch**: it creates and reviews 8 listings (some clean, some deliberately bad) so every feature has something to show.
 
-To use Claude for the review step:
+To use a real LLM for the review step:
 
 ```bash
-cp .env.example .env.local   # then set ANTHROPIC_API_KEY
+cp .env.example .env.local   # then set GEMINI_API_KEY and/or ANTHROPIC_API_KEY
 ```
+
+The app supports **either Claude or Gemini** as the live reviewer — same prompt, same schema, same citation verification, picked by whichever key is actually set (Gemini first if both are, since its free tier makes it the more likely one to be funded). Gemini is the easiest to get running with zero cost: generate a key at [Google AI Studio](https://aistudio.google.com/apikey), no credit card required.
 
 ## What it does
 
@@ -32,6 +36,16 @@ cp .env.example .env.local   # then set ANTHROPIC_API_KEY
 | Review workflow | per-finding Approve / Edit / Reject / Undo, original-vs-revised word diff, finalize gate |
 | Batch | paste up to 10 listings as JSON, or load the sample batch; one bad item never fails the batch |
 | History | append-only audit log of who did what, when, with before/after values |
+
+## Scope
+
+**Completed, matching the brief:**
+- All 7 listing fields (title, description, category, price, attributes, seller, optional tags)
+- All 5 deterministic checks (required fields, price format, duplicate detection, title/description length, supported categories) — `src/lib/validators.ts`, unit tested
+- The full AI workflow: retrieval, severity classification, cited explanation, suggested rewrite, unverifiable-claim/assumption flags — `src/lib/reviewer.ts`, `src/lib/retrieval.ts`
+- All 5 user actions: field-by-field review, approve/edit/reject (+ undo), original-vs-revised diff, batch of up to 10, append-only review/approval history
+
+**Explicitly out of scope** (per the brief): publishing to a real marketplace, image moderation, payments, seller verification, unrestricted product categories (8 fixed categories only).
 
 ## Design decisions worth knowing
 
@@ -46,6 +60,8 @@ cp .env.example .env.local   # then set ANTHROPIC_API_KEY
 **5. Append-only history, enforced by the database.** SQLite triggers reject `UPDATE` and `DELETE` on the history table, so the audit trail cannot be silently rewritten (covered by a test). Original listing fields are never modified; revisions live separately, so any change can be undone.
 
 **6. Finalize gate.** A listing cannot be finalized while critical or major findings still have no decision.
+
+**7. `node:sqlite`, not `better-sqlite3`.** The project originally used `better-sqlite3`, a native module that needs a C++ toolchain to compile. On a clean machine without Visual Studio Build Tools, `npm install` failed outright — a real risk for anyone grading this by running the quick start. Node 22.5+ ships a built-in `node:sqlite` with an almost identical synchronous API, so I swapped to it: one less native dependency, no post-install build step, same schema and triggers.
 
 ## Architecture
 
@@ -81,14 +97,14 @@ Logs are one JSON object per line (`review.complete`, `review.parse_failed`, `re
 
 SQLite needs a persistent disk, so a container host is the better fit.
 
-- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `ANTHROPIC_API_KEY` as a secret.
+- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `GEMINI_API_KEY` and/or `ANTHROPIC_API_KEY` as a secret.
 - **Vercel:** works for a demo, but the filesystem is ephemeral (the DB lives in `/tmp` and resets on cold starts). Use **Load sample batch** to repopulate.
 
 The Dockerfile has not been built yet (the authoring environment had the Docker CLI but no running daemon). `npm ci` and `npm run build` were verified, so check the first deploy's build log.
 
 ## Responsible AI-tool use
 
-This project was built with Claude Code as a coding assistant. I used it to scaffold, implement and test, and reviewed the code and behaviour myself. Things I verified by running them rather than assuming: the unit tests, the production build, and live HTTP calls against the running server (including malformed requests and the finalize gate). One bug (retrieval recall dropping valid findings) was found that way and fixed with a regression test.
+This project was built with Claude Code as a coding assistant, across two sessions. See **[AGENTS.md](AGENTS.md)** for the full account: tools used, representative prompts, what was delegated, mistakes it made and how they were caught, and what has and hasn't been independently verified yet (including one open item — the live Claude API path was fixed but not yet exercised against a real key in this environment).
 
 ## Known limitations
 

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    return ok({ listings: getStore().listListings() });
+    return ok({ listings: getStore().listSummaries() });
   } catch (e) {
     return fail(e);
   }
