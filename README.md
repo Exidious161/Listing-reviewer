@@ -99,7 +99,7 @@ Logs are one JSON object per line (`review.complete`, `review.parse_failed`, `re
 
 No login exists — click **Load sample batch** to see every feature immediately, or use **Add / import** to try your own listing(s).
 
-**Known tradeoff of this host:** Vercel's filesystem is ephemeral, so the SQLite file resets on cold starts/redeploys (it lives in `/tmp` there, see `src/lib/db.ts`). If a reviewer finds it empty, **Load sample batch** repopulates it in one click — it is not a bug, just a deliberate tradeoff for a zero-cost deployment, disclosed here rather than hidden.
+**Known limitation of this host:** Vercel's filesystem is ephemeral, and the SQLite file lives in `/tmp` there (see `src/lib/db.ts`). Checking the `X-Vercel-Id` response header showed consecutive requests landing on *different* serverless instances, each with its own `/tmp` — so data can disappear between any two requests, not just after sitting idle. **If the listings panel looks empty, click Load sample batch again** — this is a known, disclosed gap in this deployment's persistence, not a hidden bug, and the fix (a shared database such as Turso, reachable from every instance) was scoped but intentionally not done, to avoid a backend rewrite under time pressure. A host with a real persistent disk (below) does not have this problem.
 
 SQLite needs a persistent disk to survive restarts properly, so a container host is the more correct fit long-term:
 
@@ -117,3 +117,4 @@ This project was built with Claude Code as a coding assistant, across two sessio
 - Retrieval is keyword-based; with a much larger policy corpus I would move to embeddings.
 - No authentication: the reviewer name is a free-text label, not an identity.
 - The offline reviewer is a rule-based approximation; its rewrites are simpler than the live model's.
+- **The live deployment's data persistence is unreliable** (Vercel-specific — see Deployment above): because the app's data lives in a local SQLite file and Vercel runs multiple serverless instances with separate ephemeral filesystems, state can be lost between requests. The code and tests fully support real persistence (verified locally, where there's one single file); this is a hosting-platform gap, not an application bug, and the right fix (a shared database reachable from every instance) is scoped in AGENT_USAGE.md but not implemented.
