@@ -8,7 +8,7 @@ export const maxDuration = 120;
 /** Loads the demo batch (creates + reviews each listing). */
 export async function POST() {
   try {
-    const results = await getStore().runBatch(SAMPLE_LISTINGS);
+    const results = await (await getStore()).runBatch(SAMPLE_LISTINGS);
     return ok({ results }, 201);
   } catch (e) {
     return fail(e);

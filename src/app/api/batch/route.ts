@@ -10,7 +10,7 @@ export async function POST(req: Request) {
   try {
     const body = await readJson<{ listings?: Partial<Listing>[] }>(req);
     if (!Array.isArray(body.listings)) throw new StoreError("`listings` must be an array");
-    const results = await getStore().runBatch(body.listings);
+    const results = await (await getStore()).runBatch(body.listings);
     return ok({ results });
   } catch (e) {
     return fail(e);

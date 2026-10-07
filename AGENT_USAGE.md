@@ -140,6 +140,55 @@ that were field-specific and clearly not canned (e.g. "Clothing & Accessories ca
 size and material attributes," "Listings for firearms and ammunition are prohibited" — matching
 each listing's actual content, not generic text).
 
+## Session 2, continued — the persistence bug got worse, so it got fixed
+
+The disclosed Vercel persistence limitation turned out to be worse than first described: it
+wasn't just "resets if idle," it broke the core workflow directly. Reproduced by curl: submit a
+batch, then immediately `GET` the listing the response said was just created — `404 Listing not
+found`, on the very next request. The user hit this independently in the real UI first ("it says
+no listing found why") before it was reproduced and confirmed via `X-Vercel-Id` instance IDs.
+
+Given that severity, the earlier "disclose and ship" decision was revisited and reversed: the
+user chose to do the real fix. Migrated storage from a local SQLite file (via `node:sqlite`) to
+**Turso** (a free, hosted, SQLite-compatible database, reachable from every serverless instance)
+using `@libsql/client`:
+
+- `db.ts`: rewritten around `@libsql/client`'s `Client`, which is SQLite-compatible both locally
+  (`:memory:` for tests, `file:...` for local/container disk) and remotely (`libsql://...` for
+  Turso) — one code path for all three, verified in that order before deploying.
+- `store.ts`: every method converted from synchronous to `async`/`await` (libsql's remote calls
+  are network calls, not local function calls). `decide()`'s transaction was rewritten against
+  libsql's real interactive-transaction API (`client.transaction("write")`) rather than raw
+  `BEGIN`/`COMMIT` statements, since those aren't meaningful over a remote connection the same way.
+- All 6 API route handlers: updated to `await` the now-async `Store` methods. Caught one bug this
+  surfaced: `src/app/api/listings/[id]/route.ts` did `const listing = store.getListing(id); if
+  (!listing) throw ...` — without `await`, `listing` was always a truthy Promise object, so the
+  404 branch could never fire. Would have been a second, subtler bug in the exact code path this
+  whole migration was fixing, caught by reading the diff rather than just trusting the pattern
+  held everywhere.
+- `tests/store.test.ts`: every call site updated to `await`; `rawDb.prepare(...)` (a method on the
+  old sync client) replaced with the new `prepare(rawDb, sql)` free function, since the real
+  libsql `Client` has no `.prepare()` of its own.
+
+**Verified at each stage, not just at the end:**
+1. Turso connection sanity-checked standalone (raw insert/select) before touching any app code.
+2. Local in-memory mode (`:memory:`) and the append-only trigger's error message both confirmed
+   working identically through libsql before rewriting tests against it.
+3. Full test suite: 53/53 passing against the new async store.
+4. Local dev server against the *real* Turso database (not just `:memory:`): seed, then
+   immediately fetch a freshly-created listing by id — confirmed persisted.
+5. Deployed to Vercel with `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` set. Re-ran the exact
+   reproduction from the original bug report against the live URL: batch-create, immediate fetch
+   by id — now 200, not 404. Also fetched `/api/listings` three times in a row and confirmed three
+   different `X-Vercel-Id` instances all returned the identical, correct, growing listing count —
+   direct proof the fix holds across the exact failure mode that was reproduced earlier.
+
+**One real slip along the way:** the user pasted the Turso database URL and auth token into the
+two `.env.local` lines in the wrong order (swapped). Caught immediately because the connection
+test was run before writing any migration code, not after — the error (`URL_INVALID`, given what
+was obviously a JWT instead of a `libsql://` URL) made the swap obvious. Worth noting as a reason
+to verify credentials in isolation before building on top of them, which is what happened.
+
 ## Known unverified items (as of this session)
 
 - UI changes: compiled and type-checked, not eyeballed in a browser by the agent (the user has
@@ -149,14 +198,6 @@ each listing's actual content, not generic text).
 - The Gemini free-tier rate limit is real (modest requests/day) — fine for a demo, but if the
   deployed instance gets hit with unexpectedly heavy traffic during review, it could fall back
   to mock mid-review. Worth monitoring, not a reason not to ship this way.
-- The deployed instance's data persistence is unreliable: checking the `X-Vercel-Id` response
-  header showed consecutive requests landing on *different* serverless instances, each with its
-  own ephemeral `/tmp` — so SQLite state can vanish between any two requests, not just after
-  being idle. Disclosed in the README's Deployment section, not hidden. A proper fix (a real
-  shared database such as Turso, reachable from every instance) was scoped but not done in this
-  session — the user chose to weigh that tradeoff rather than have it done unprompted, given it's
-  a genuine backend rewrite (sync SQLite calls → async network calls throughout `store.ts` and
-  the API routes), not a quick patch.
 - This file's own filename was wrong for most of the session: the assignment asks for
   `AGENT_USAGE.md`, and this was created and maintained as `AGENTS.md` instead (misread from the
   rubric screenshot the first time it was shown). Caught when the user re-shared the same rubric

@@ -7,15 +7,15 @@ export const dynamic = "force-dynamic";
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const id = parseId((await ctx.params).id);
-    const store = getStore();
-    const listing = store.getListing(id);
+    const store = await getStore();
+    const listing = await store.getListing(id);
     if (!listing) throw new StoreError("Listing not found", 404);
-    const review = store.latestReview(id);
+    const review = await store.latestReview(id);
     return ok({
       listing,
       review,
-      decisions: review ? store.decisions(review.id) : {},
-      history: store.history(id),
+      decisions: review ? await store.decisions(review.id) : {},
+      history: await store.history(id),
     });
   } catch (e) {
     return fail(e);

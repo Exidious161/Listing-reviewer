@@ -3,8 +3,8 @@ import { getDb } from "./db";
 import { log } from "./logger";
 import { Store, StoreError } from "./store";
 
-export function getStore(): Store {
-  return new Store(getDb());
+export async function getStore(): Promise<Store> {
+  return new Store(await getDb());
 }
 
 export function ok(data: unknown, status = 200) {

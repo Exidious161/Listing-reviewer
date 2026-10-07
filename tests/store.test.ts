@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { openDb } from "@/lib/db";
+import { openDb, prepare, type Database } from "@/lib/db";
 import { MAX_BATCH, Store, StoreError } from "@/lib/store";
 
 let store: Store;
-let rawDb: ReturnType<typeof openDb>;
+let rawDb: Database;
 
 const bad = {
   title: "BEST Water Bottle!!! Unbeatable",
@@ -16,81 +16,85 @@ const bad = {
   tags: [],
 };
 
-beforeEach(() => {
-  rawDb = openDb(":memory:");
+beforeEach(async () => {
+  rawDb = await openDb(":memory:");
   store = new Store(rawDb);
 });
 
 describe("workflow", () => {
   it("creates, reviews, and records history", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
     expect(r.findings.length).toBeGreaterThan(0);
-    expect(store.history(l.id).map((h) => h.event)).toEqual(["created", "reviewed"]);
+    expect((await store.history(l.id)).map((h) => h.event)).toEqual(["created", "reviewed"]);
   });
 
   it("approve applies the suggestion to the revised version, original untouched", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
     const f = r.findings.find((x) => x.field === "title" && x.suggestion)!;
-    const { listing } = store.decide(r.id, f.id, "approved", { actor: "avnish" });
+    const { listing } = await store.decide(r.id, f.id, "approved", { actor: "avnish" });
     expect(listing.title).toBe(bad.title);
     expect(listing.revised.title).toBe(f.suggestion);
-    const h = store.history(l.id).at(-1)!;
+    const h = (await store.history(l.id)).at(-1)!;
     expect(h).toMatchObject({ event: "approved", field: "title", actor: "avnish", before: bad.title });
   });
 
   it("edit stores the reviewer's own text", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
     const f = r.findings.find((x) => x.field === "title")!;
-    const { listing } = store.decide(r.id, f.id, "edited", { editedValue: "Insulated Water Bottle 750ml" });
+    const { listing } = await store.decide(r.id, f.id, "edited", { editedValue: "Insulated Water Bottle 750ml" });
     expect(listing.revised.title).toBe("Insulated Water Bottle 750ml");
   });
 
   it("reject leaves the value unchanged but is recorded", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
     const f = r.findings[0];
-    const { listing, decisions } = store.decide(r.id, f.id, "rejected");
+    const { listing, decisions } = await store.decide(r.id, f.id, "rejected");
     expect(listing.revised).toEqual({});
     expect(decisions[f.id].decision).toBe("rejected");
   });
 
   it("revert removes a revision and returns the finding to pending", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
     const f = r.findings.find((x) => x.field === "title" && x.suggestion)!;
-    store.decide(r.id, f.id, "approved");
-    const { listing, decisions } = store.decide(r.id, f.id, "reverted");
+    await store.decide(r.id, f.id, "approved");
+    const { listing, decisions } = await store.decide(r.id, f.id, "reverted");
     expect(listing.revised.title).toBeUndefined();
     expect(decisions[f.id].decision).toBe("pending");
   });
 
   it("refuses to approve a finding with no suggestion and rejects empty edits", async () => {
-    const l = store.createListing({ ...bad, title: "Replica designer handbag copy" });
+    const l = await store.createListing({ ...bad, title: "Replica designer handbag copy" });
     const r = await store.runReview(l.id, { forceMock: true });
     const f = r.findings.find((x) => x.suggestion === null)!;
-    expect(() => store.decide(r.id, f.id, "approved")).toThrow(StoreError);
-    expect(() => store.decide(r.id, f.id, "edited", { editedValue: "  " })).toThrow(StoreError);
+    await expect(store.decide(r.id, f.id, "approved")).rejects.toThrow(StoreError);
+    await expect(store.decide(r.id, f.id, "edited", { editedValue: "  " })).rejects.toThrow(StoreError);
   });
 
   it("blocks finalizing until critical/major findings have decisions", async () => {
-    const l = store.createListing(bad);
+    const l = await store.createListing(bad);
     const r = await store.runReview(l.id, { forceMock: true });
-    expect(() => store.finalize(l.id)).toThrow(/need a decision/);
+    await expect(store.finalize(l.id)).rejects.toThrow(/need a decision/);
     for (const f of r.findings) {
-      if (f.severity === "critical" || f.severity === "major") store.decide(r.id, f.id, "rejected");
+      if (f.severity === "critical" || f.severity === "major") await store.decide(r.id, f.id, "rejected");
     }
-    expect(store.finalize(l.id).status).toBe("finalized");
+    expect((await store.finalize(l.id)).status).toBe("finalized");
   });
 });
 
 describe("history is append-only", () => {
-  it("rejects UPDATE and DELETE at the database level", () => {
-    const l = store.createListing(bad);
-    expect(() => rawDb.prepare("UPDATE history SET actor='x' WHERE listing_id=?").run(l.id)).toThrow(/append-only/);
-    expect(() => rawDb.prepare("DELETE FROM history WHERE listing_id=?").run(l.id)).toThrow(/append-only/);
+  it("rejects UPDATE and DELETE at the database level", async () => {
+    const l = await store.createListing(bad);
+    await expect(
+      prepare(rawDb, "UPDATE history SET actor='x' WHERE listing_id=?").run(l.id),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      prepare(rawDb, "DELETE FROM history WHERE listing_id=?").run(l.id),
+    ).rejects.toThrow(/append-only/);
   });
 });
 

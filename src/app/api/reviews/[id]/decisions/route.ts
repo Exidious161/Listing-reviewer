@@ -18,12 +18,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     if (!body.findingId) throw new StoreError("findingId is required");
     if (!ALLOWED.includes(body.decision as (typeof ALLOWED)[number]))
       throw new StoreError(`decision must be one of: ${ALLOWED.join(", ")}`);
-    const store = getStore();
-    const result = store.decide(reviewId, body.findingId, body.decision as (typeof ALLOWED)[number], {
+    const store = await getStore();
+    const result = await store.decide(reviewId, body.findingId, body.decision as (typeof ALLOWED)[number], {
       editedValue: body.editedValue,
       actor: body.actor,
     });
-    return ok({ ...result, history: store.history(result.listing.id) });
+    return ok({ ...result, history: await store.history(result.listing.id) });
   } catch (e) {
     return fail(e);
   }

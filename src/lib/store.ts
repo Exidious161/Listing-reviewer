@@ -1,5 +1,4 @@
-import type { Database } from "./db";
-import { runInTransaction } from "./db";
+import { prepare, runInTransaction, type Database, type Executor, type Row } from "./db";
 import { reviewListing, type ReviewOptions, type ReviewResult } from "./reviewer";
 import { log } from "./logger";
 import type { Finding, FindingDecision, Listing, ValidationIssue } from "./types";
@@ -45,8 +44,6 @@ export interface HistoryEntry {
 }
 
 const now = () => new Date().toISOString();
-
-type Row = Record<string, unknown>;
 
 function mapListing(r: Row): StoredListing {
   return {
@@ -124,112 +121,118 @@ export function normalizeInput(x: Partial<Listing>): Listing {
 export class Store {
   constructor(private db: Database) {}
 
-  private addHistory(e: {
-    listingId: number;
-    reviewId?: number | null;
-    findingId?: string | null;
-    event: string;
-    field?: string | null;
-    before?: string | null;
-    after?: string | null;
-    actor: string;
-  }): void {
-    this.db
-      .prepare(
-        `INSERT INTO history (listing_id, review_id, finding_id, event, field, before_value, after_value, actor, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        e.listingId,
-        e.reviewId ?? null,
-        e.findingId ?? null,
-        e.event,
-        e.field ?? null,
-        e.before ?? null,
-        e.after ?? null,
-        e.actor,
-        now(),
-      );
+  private async addHistory(
+    exec: Executor,
+    e: {
+      listingId: number;
+      reviewId?: number | null;
+      findingId?: string | null;
+      event: string;
+      field?: string | null;
+      before?: string | null;
+      after?: string | null;
+      actor: string;
+    },
+  ): Promise<void> {
+    await prepare(
+      exec,
+      `INSERT INTO history (listing_id, review_id, finding_id, event, field, before_value, after_value, actor, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      e.listingId,
+      e.reviewId ?? null,
+      e.findingId ?? null,
+      e.event,
+      e.field ?? null,
+      e.before ?? null,
+      e.after ?? null,
+      e.actor,
+      now(),
+    );
   }
 
-  createListing(input: Partial<Listing>, actor = "seller"): StoredListing {
+  async createListing(input: Partial<Listing>, actor = "seller"): Promise<StoredListing> {
     const l = normalizeInput(input);
-    const info = this.db
-      .prepare(
-        `INSERT INTO listings (title, description, category, price, attributes, seller, tags, created_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        l.title,
-        l.description,
-        l.category,
-        l.price,
-        JSON.stringify(l.attributes),
-        l.seller,
-        JSON.stringify(l.tags),
-        now(),
-      );
-    const id = Number(info.lastInsertRowid);
-    this.addHistory({ listingId: id, event: "created", actor });
-    return this.getListing(id)!;
+    const info = await prepare(
+      this.db,
+      `INSERT INTO listings (title, description, category, price, attributes, seller, tags, created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(
+      l.title,
+      l.description,
+      l.category,
+      l.price,
+      JSON.stringify(l.attributes),
+      l.seller,
+      JSON.stringify(l.tags),
+      now(),
+    );
+    const id = info.lastInsertRowid;
+    await this.addHistory(this.db, { listingId: id, event: "created", actor });
+    return (await this.getListing(id))!;
   }
 
-  getListing(id: number): StoredListing | null {
-    const r = this.db.prepare("SELECT * FROM listings WHERE id = ?").get(id) as Row | undefined;
+  async getListing(id: number): Promise<StoredListing | null> {
+    const r = await prepare(this.db, "SELECT * FROM listings WHERE id = ?").get(id);
     return r ? mapListing(r) : null;
   }
 
-  listListings(): StoredListing[] {
-    return (this.db.prepare("SELECT * FROM listings ORDER BY id DESC").all() as Row[]).map(mapListing);
+  async listListings(): Promise<StoredListing[]> {
+    const rows = await prepare(this.db, "SELECT * FROM listings ORDER BY id DESC").all();
+    return rows.map(mapListing);
   }
 
   /** Listings plus a lightweight finding/resolution summary from their latest review, for list views. */
-  listSummaries(): ListingSummary[] {
-    return this.listListings().map((l) => {
-      const review = this.latestReview(l.id);
-      if (!review) return { ...l, summary: { total: 0, resolved: 0, blocking: 0 } };
-      const d = this.decisions(review.id);
-      const pending = (f: Finding) => (d[f.id]?.decision ?? "pending") === "pending";
-      return {
-        ...l,
-        summary: {
-          total: review.findings.length,
-          resolved: review.findings.filter((f) => !pending(f)).length,
-          blocking: review.findings.filter((f) => (f.severity === "critical" || f.severity === "major") && pending(f))
-            .length,
-        },
-      };
-    });
+  async listSummaries(): Promise<ListingSummary[]> {
+    const listings = await this.listListings();
+    return Promise.all(
+      listings.map(async (l) => {
+        const review = await this.latestReview(l.id);
+        if (!review) return { ...l, summary: { total: 0, resolved: 0, blocking: 0 } };
+        const d = await this.decisions(review.id);
+        const pending = (f: Finding) => (d[f.id]?.decision ?? "pending") === "pending";
+        return {
+          ...l,
+          summary: {
+            total: review.findings.length,
+            resolved: review.findings.filter((f) => !pending(f)).length,
+            blocking: review.findings.filter(
+              (f) => (f.severity === "critical" || f.severity === "major") && pending(f),
+            ).length,
+          },
+        };
+      }),
+    );
   }
 
-  latestReview(listingId: number): StoredReview | null {
-    const r = this.db
-      .prepare("SELECT * FROM reviews WHERE listing_id = ? ORDER BY id DESC LIMIT 1")
-      .get(listingId) as Row | undefined;
+  async latestReview(listingId: number): Promise<StoredReview | null> {
+    const r = await prepare(
+      this.db,
+      "SELECT * FROM reviews WHERE listing_id = ? ORDER BY id DESC LIMIT 1",
+    ).get(listingId);
     return r ? mapReview(r) : null;
   }
 
-  getReview(id: number): StoredReview | null {
-    const r = this.db.prepare("SELECT * FROM reviews WHERE id = ?").get(id) as Row | undefined;
+  async getReview(id: number): Promise<StoredReview | null> {
+    const r = await prepare(this.db, "SELECT * FROM reviews WHERE id = ?").get(id);
     return r ? mapReview(r) : null;
   }
 
-  history(listingId: number): HistoryEntry[] {
-    return (
-      this.db
-        .prepare("SELECT * FROM history WHERE listing_id = ? ORDER BY id ASC")
-        .all(listingId) as Row[]
-    ).map(mapHistory);
+  async history(listingId: number): Promise<HistoryEntry[]> {
+    const rows = await prepare(
+      this.db,
+      "SELECT * FROM history WHERE listing_id = ? ORDER BY id ASC",
+    ).all(listingId);
+    return rows.map(mapHistory);
   }
 
   /** Decisions made so far on a review: findingId -> latest decision event. */
-  decisions(reviewId: number): Record<string, { decision: FindingDecision; value: string | null }> {
-    const rows = this.db
-      .prepare(
-        `SELECT finding_id, event, after_value FROM history
-         WHERE review_id = ? AND event IN ('approved','edited','rejected','reverted') ORDER BY id ASC`,
-      )
-      .all(reviewId) as Row[];
+  async decisions(reviewId: number): Promise<Record<string, { decision: FindingDecision; value: string | null }>> {
+    const rows = await prepare(
+      this.db,
+      `SELECT finding_id, event, after_value FROM history
+       WHERE review_id = ? AND event IN ('approved','edited','rejected','reverted') ORDER BY id ASC`,
+    ).all(reviewId);
     const out: Record<string, { decision: FindingDecision; value: string | null }> = {};
     for (const r of rows) {
       const id = r.finding_id as string;
@@ -243,35 +246,34 @@ export class Store {
   }
 
   async runReview(listingId: number, opts: ReviewOptions = {}, actor = "system"): Promise<StoredReview> {
-    const listing = this.getListing(listingId);
+    const listing = await this.getListing(listingId);
     if (!listing) throw new StoreError("Listing not found", 404);
-    const others = this.listListings().filter((l) => l.id !== listingId);
+    const others = (await this.listListings()).filter((l) => l.id !== listingId);
     const result: ReviewResult = await reviewListing(listing, { ...opts, others });
-    const info = this.db
-      .prepare(
-        `INSERT INTO reviews (listing_id, mode, validation, findings, retrieved, warnings, dropped, created_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
-      )
-      .run(
-        listingId,
-        result.mode,
-        JSON.stringify(result.validationIssues),
-        JSON.stringify(result.findings),
-        JSON.stringify(result.retrievedSections),
-        JSON.stringify(result.warnings),
-        JSON.stringify(result.droppedCitations),
-        now(),
-      );
-    const reviewId = Number(info.lastInsertRowid);
-    this.db.prepare("UPDATE listings SET status = 'in_review' WHERE id = ?").run(listingId);
-    this.addHistory({
+    const info = await prepare(
+      this.db,
+      `INSERT INTO reviews (listing_id, mode, validation, findings, retrieved, warnings, dropped, created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(
+      listingId,
+      result.mode,
+      JSON.stringify(result.validationIssues),
+      JSON.stringify(result.findings),
+      JSON.stringify(result.retrievedSections),
+      JSON.stringify(result.warnings),
+      JSON.stringify(result.droppedCitations),
+      now(),
+    );
+    const reviewId = info.lastInsertRowid;
+    await prepare(this.db, "UPDATE listings SET status = 'in_review' WHERE id = ?").run(listingId);
+    await this.addHistory(this.db, {
       listingId,
       reviewId,
       event: "reviewed",
       after: `${result.findings.length} findings, ${result.validationIssues.length} validation issues (${result.mode})`,
       actor,
     });
-    return this.getReview(reviewId)!;
+    return (await this.getReview(reviewId))!;
   }
 
   async runBatch(
@@ -284,10 +286,10 @@ export class Store {
       throw new StoreError(`Batch is limited to ${MAX_BATCH} listings`);
     const out: { listing: StoredListing; review: StoredReview | null; error?: string }[] = [];
     for (const input of inputs) {
-      const listing = this.createListing(input);
+      const listing = await this.createListing(input);
       try {
         const review = await this.runReview(listing.id, opts);
-        out.push({ listing: this.getListing(listing.id)!, review });
+        out.push({ listing: (await this.getListing(listing.id))!, review });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log("error", "batch.item_failed", { listingId: listing.id, error: msg });
@@ -303,22 +305,22 @@ export class Store {
     return field === "tags" ? l.tags.join(", ") : (l[field] as string);
   }
 
-  decide(
+  async decide(
     reviewId: number,
     findingId: string,
     decision: "approved" | "edited" | "rejected" | "reverted",
     opts: { editedValue?: string; actor?: string } = {},
-  ): { listing: StoredListing; decisions: ReturnType<Store["decisions"]> } {
-    const review = this.getReview(reviewId);
+  ): Promise<{ listing: StoredListing; decisions: Awaited<ReturnType<Store["decisions"]>> }> {
+    const review = await this.getReview(reviewId);
     if (!review) throw new StoreError("Review not found", 404);
     const finding = review.findings.find((f) => f.id === findingId);
     if (!finding) throw new StoreError("Finding not found", 404);
-    const listing = this.getListing(review.listingId)!;
+    const listing = (await this.getListing(review.listingId))!;
     const actor = opts.actor?.trim() || "reviewer";
     const field = finding.field;
     const canApply = (REVISABLE as readonly string[]).includes(field);
 
-    runInTransaction(this.db, () => {
+    await runInTransaction(this.db, async (exec) => {
       let before: string | null = null;
       let after: string | null = null;
       if (canApply) before = this.currentValue(listing, field as Revisable);
@@ -344,11 +346,12 @@ export class Store {
       }
 
       if (canApply && (decision === "approved" || decision === "edited" || decision === "reverted")) {
-        this.db
-          .prepare("UPDATE listings SET revised = ? WHERE id = ?")
-          .run(JSON.stringify(revised), listing.id);
+        await prepare(exec, "UPDATE listings SET revised = ? WHERE id = ?").run(
+          JSON.stringify(revised),
+          listing.id,
+        );
       }
-      this.addHistory({
+      await this.addHistory(exec, {
         listingId: listing.id,
         reviewId,
         findingId,
@@ -359,15 +362,15 @@ export class Store {
         actor,
       });
     });
-    return { listing: this.getListing(listing.id)!, decisions: this.decisions(reviewId) };
+    return { listing: (await this.getListing(listing.id))!, decisions: await this.decisions(reviewId) };
   }
 
-  finalize(listingId: number, actor = "reviewer"): StoredListing {
-    const l = this.getListing(listingId);
+  async finalize(listingId: number, actor = "reviewer"): Promise<StoredListing> {
+    const l = await this.getListing(listingId);
     if (!l) throw new StoreError("Listing not found", 404);
-    const review = this.latestReview(listingId);
+    const review = await this.latestReview(listingId);
     if (review) {
-      const d = this.decisions(review.id);
+      const d = await this.decisions(review.id);
       const pending = review.findings.filter(
         (f) => (f.severity === "critical" || f.severity === "major") && (d[f.id]?.decision ?? "pending") === "pending",
       );
@@ -376,8 +379,8 @@ export class Store {
           `${pending.length} critical/major finding(s) still need a decision before finalizing.`,
         );
     }
-    this.db.prepare("UPDATE listings SET status = 'finalized' WHERE id = ?").run(listingId);
-    this.addHistory({ listingId, event: "finalized", actor });
-    return this.getListing(listingId)!;
+    await prepare(this.db, "UPDATE listings SET status = 'finalized' WHERE id = ?").run(listingId);
+    await this.addHistory(this.db, { listingId, event: "finalized", actor });
+    return (await this.getListing(listingId))!;
   }
 }

@@ -6,7 +6,7 @@ A web app that reviews marketplace listings against a written marketplace policy
 
 ## Quick start
 
-Requires Node 22.5+ (uses the built-in `node:sqlite`, so there's no native module to compile — `npm install` has no C++ toolchain requirement).
+No native module to compile — storage is `@libsql/client` (ships prebuilt binaries), so `npm install` has no C++ toolchain requirement on any platform.
 
 ```bash
 npm install
@@ -61,7 +61,7 @@ The app supports **either Claude or Gemini** as the live reviewer — same promp
 
 **6. Finalize gate.** A listing cannot be finalized while critical or major findings still have no decision.
 
-**7. `node:sqlite`, not `better-sqlite3`.** The project originally used `better-sqlite3`, a native module that needs a C++ toolchain to compile. On a clean machine without Visual Studio Build Tools, `npm install` failed outright — a real risk for anyone grading this by running the quick start. Node 22.5+ ships a built-in `node:sqlite` with an almost identical synchronous API, so I swapped to it: one less native dependency, no post-install build step, same schema and triggers.
+**7. No native SQLite dependency, by way of two swaps.** The project originally used `better-sqlite3`, which needs a C++ toolchain to compile — `npm install` failed outright on a clean machine without Visual Studio Build Tools, a real risk for anyone grading this. First swap: Node's built-in `node:sqlite` (sync API, no compile step). Second swap, later: `@libsql/client`, because Vercel's serverless instances each have their own ephemeral filesystem and a local SQLite file doesn't survive that (see Deployment) — `@libsql/client` speaks the same SQLite dialect locally (tests, local dev) and to a real hosted database (Turso, in production) through one code path, still with no native compile step either way.
 
 ## Architecture
 
@@ -69,11 +69,11 @@ The app supports **either Claude or Gemini** as the live reviewer — same promp
 src/lib/validators.ts     deterministic checks
 src/lib/policy.ts         policy + brand guide sections (original text)
 src/lib/retrieval.ts      TF-IDF scoring + signal rules
-src/lib/reviewer.ts       prompt, Claude call, parse/retry, fallback
+src/lib/reviewer.ts       prompt, Claude/Gemini call, parse/retry, fallback
 src/lib/findings.ts       Zod schema, JSON extraction, citation verification
 src/lib/mockReviewer.ts   offline rule-based reviewer
-src/lib/store.ts          workflow logic (review, decide, finalize, batch)
-src/lib/db.ts             SQLite schema, append-only triggers
+src/lib/store.ts          workflow logic (review, decide, finalize, batch) -- async, libsql-backed
+src/lib/db.ts             schema, append-only triggers, local file or Turso via one client
 src/app/api/*             route handlers
 src/app/page.tsx          review UI
 tests/                    Vitest suites (validators, retrieval, reviewer, store)
@@ -99,11 +99,11 @@ Logs are one JSON object per line (`review.complete`, `review.parse_failed`, `re
 
 No login exists — click **Load sample batch** to see every feature immediately, or use **Add / import** to try your own listing(s).
 
-**Known limitation of this host:** Vercel's filesystem is ephemeral, and the SQLite file lives in `/tmp` there (see `src/lib/db.ts`). Checking the `X-Vercel-Id` response header showed consecutive requests landing on *different* serverless instances, each with its own `/tmp` — so data can disappear between any two requests, not just after sitting idle. **If the listings panel looks empty, click Load sample batch again** — this is a known, disclosed gap in this deployment's persistence, not a hidden bug, and the fix (a shared database such as Turso, reachable from every instance) was scoped but intentionally not done, to avoid a backend rewrite under time pressure. A host with a real persistent disk (below) does not have this problem.
+**Persistence:** this deployment uses [Turso](https://turso.tech) (a free, hosted, SQLite-compatible database) instead of a local file, specifically because Vercel runs multiple serverless instances with separate ephemeral filesystems — a local SQLite file would lose data between requests landing on different instances (this was caught and verified: the `X-Vercel-Id` response header showed consecutive requests hitting different instances, and a listing created via one request returned "not found" from another immediately after). Turso is reachable from every instance, so this is a real fix, not a workaround — confirmed by creating a listing and fetching it back across three separate instance IDs with identical results. See `src/lib/db.ts`/`src/lib/store.ts` and AGENT_USAGE.md for the full account, including the version of this app that didn't have this fix.
 
-SQLite needs a persistent disk to survive restarts properly, so a container host is the more correct fit long-term:
+For a host with its own persistent disk, plain local SQLite works too — no Turso needed:
 
-- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided for Render). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `GEMINI_API_KEY` and/or `ANTHROPIC_API_KEY` as a secret.
+- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided for Render). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `GEMINI_API_KEY` and/or `ANTHROPIC_API_KEY` as a secret. (Or set `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` there too — the app prefers Turso over a local file whenever it's configured, regardless of host.)
 
 The Dockerfile has not been built yet (the authoring environment had the Docker CLI but no running daemon). `npm ci` and `npm run build` were verified, so check the first deploy's build log.
 
@@ -117,4 +117,3 @@ This project was built with Claude Code as a coding assistant, across two sessio
 - Retrieval is keyword-based; with a much larger policy corpus I would move to embeddings.
 - No authentication: the reviewer name is a free-text label, not an identity.
 - The offline reviewer is a rule-based approximation; its rewrites are simpler than the live model's.
-- **The live deployment's data persistence is unreliable** (Vercel-specific — see Deployment above): because the app's data lives in a local SQLite file and Vercel runs multiple serverless instances with separate ephemeral filesystems, state can be lost between requests. The code and tests fully support real persistence (verified locally, where there's one single file); this is a hosting-platform gap, not an application bug, and the right fix (a shared database reachable from every instance) is scoped in AGENT_USAGE.md but not implemented.
