@@ -111,15 +111,46 @@ category-specific missing-attribute catch with its own stated assumption) citing
 real policy sections — not canned mock text. This is the first point in the project where "the
 AI workflow works" stopped being a claim and became something actually observed.
 
+## Session 2, continued — deployed to Vercel and verified live
+
+The user chose Vercel over the Render/Railway alternatives discussed earlier (their call, made
+with the ephemeral-filesystem tradeoff disclosed up front). The user authorized the Vercel CLI
+non-interactively (`vercel login --non-interactive` printed a device-auth URL; no further action
+needed since their browser already had an active Vercel session), which let the agent complete
+the rest of the setup itself: linked the existing Vercel project, added `GEMINI_API_KEY` as a
+Production secret via piped stdin (so the key value never appeared in any command output or
+transcript), and triggered a production deploy — all via plain `vercel` CLI commands.
+
+**One package was deliberately not installed:** the user's suggested `npx plugins add
+vercel/vercel-plugin` (sourced from Vercel's own published agent-setup doc at
+`vercel.com/get-started.md`, so not a fabricated suggestion). The `plugins` npm package's registry
+history shows it as a small, unrelated utility from 2014 by a different maintainer, now at a very
+different version with active canary builds — ownership/purpose changed at some point, and that
+alone was reason enough not to run an unverified `npx`-auto-install of it, especially since it was
+explicitly optional ("guidance only") and not required for the actual deploy/env-var operations
+that were the real goal.
+
+**Also caught:** `vercel link` silently re-added `.env*` to `.gitignore`, which would have
+re-excluded `.env.example` from git the same way the original `.gitignore` bug did. Caught and
+fixed again before it reached a commit.
+
+**Verified, deployed:** seeded the live URL's `/api/seed` endpoint directly (not just opened it in
+a browser) and confirmed all 8 listings came back `mode: "live"` with zero warnings, with findings
+that were field-specific and clearly not canned (e.g. "Clothing & Accessories category requires
+size and material attributes," "Listings for firearms and ammunition are prohibited" — matching
+each listing's actual content, not generic text).
+
 ## Known unverified items (as of this session)
 
-- UI changes: compiled and type-checked, not eyeballed in a browser by the agent.
+- UI changes: compiled and type-checked, not eyeballed in a browser by the agent (the user has
+  seen it rendered via screenshots and confirmed it looks right).
 - Docker build: never run (no Docker daemon in this environment); `npm ci` and `npm run build`
-  were verified outside Docker.
-- Hosted deployment: not yet done — see README's Deployment section.
+  were verified outside Docker. Not blocking, since the live deployment is on Vercel, not Docker.
 - The Gemini free-tier rate limit is real (modest requests/day) — fine for a demo, but if the
   deployed instance gets hit with unexpectedly heavy traffic during review, it could fall back
   to mock mid-review. Worth monitoring, not a reason not to ship this way.
+- The deployed instance's SQLite data resets on cold start/redeploy (Vercel's filesystem is
+  ephemeral) — disclosed in the README's Deployment section, not hidden.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

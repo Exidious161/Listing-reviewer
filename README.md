@@ -95,10 +95,15 @@ Logs are one JSON object per line (`review.complete`, `review.parse_failed`, `re
 
 ## Deployment
 
-SQLite needs a persistent disk, so a container host is the better fit.
+**Live:** [listing-reviewer.vercel.app](https://listing-reviewer.vercel.app) — `GEMINI_API_KEY` is set as a Production secret; reviews there genuinely run live (verified: seeding the sample batch returns `mode: "live"` for all 8 listings with real, field-specific findings, not mock output).
 
-- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `GEMINI_API_KEY` and/or `ANTHROPIC_API_KEY` as a secret.
-- **Vercel:** works for a demo, but the filesystem is ephemeral (the DB lives in `/tmp` and resets on cold starts). Use **Load sample batch** to repopulate.
+No login exists — click **Load sample batch** to see every feature immediately, or use **Add / import** to try your own listing(s).
+
+**Known tradeoff of this host:** Vercel's filesystem is ephemeral, so the SQLite file resets on cold starts/redeploys (it lives in `/tmp` there, see `src/lib/db.ts`). If a reviewer finds it empty, **Load sample batch** repopulates it in one click — it is not a bug, just a deliberate tradeoff for a zero-cost deployment, disclosed here rather than hidden.
+
+SQLite needs a persistent disk to survive restarts properly, so a container host is the more correct fit long-term:
+
+- **Render / Railway / Fly.io:** use the included `Dockerfile` (`render.yaml` is provided for Render). Mount a volume at `/data`; the app writes `DATABASE_PATH=/data/app.db`. Set `GEMINI_API_KEY` and/or `ANTHROPIC_API_KEY` as a secret.
 
 The Dockerfile has not been built yet (the authoring environment had the Docker CLI but no running daemon). `npm ci` and `npm run build` were verified, so check the first deploy's build log.
 
