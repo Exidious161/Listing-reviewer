@@ -149,8 +149,19 @@ each listing's actual content, not generic text).
 - The Gemini free-tier rate limit is real (modest requests/day) — fine for a demo, but if the
   deployed instance gets hit with unexpectedly heavy traffic during review, it could fall back
   to mock mid-review. Worth monitoring, not a reason not to ship this way.
-- The deployed instance's SQLite data resets on cold start/redeploy (Vercel's filesystem is
-  ephemeral) — disclosed in the README's Deployment section, not hidden.
+- The deployed instance's data persistence is unreliable: checking the `X-Vercel-Id` response
+  header showed consecutive requests landing on *different* serverless instances, each with its
+  own ephemeral `/tmp` — so SQLite state can vanish between any two requests, not just after
+  being idle. Disclosed in the README's Deployment section, not hidden. A proper fix (a real
+  shared database such as Turso, reachable from every instance) was scoped but not done in this
+  session — the user chose to weigh that tradeoff rather than have it done unprompted, given it's
+  a genuine backend rewrite (sync SQLite calls → async network calls throughout `store.ts` and
+  the API routes), not a quick patch.
+- This file's own filename was wrong for most of the session: the assignment asks for
+  `AGENT_USAGE.md`, and this was created and maintained as `AGENTS.md` instead (misread from the
+  rubric screenshot the first time it was shown). Caught when the user re-shared the same rubric
+  image and asked to double check it was covered. Renamed via `git mv` to preserve history; the
+  content was correct the whole time, only the filename was wrong.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
