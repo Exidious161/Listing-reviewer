@@ -109,7 +109,7 @@ The Dockerfile has not been built yet (the authoring environment had the Docker 
 
 ## Responsible AI-tool use
 
-This project was built with Claude Code as a coding assistant, across two sessions. See **[AGENTS.md](AGENTS.md)** for the full account: tools used, representative prompts, what was delegated, mistakes it made and how they were caught, and what has and hasn't been independently verified yet (including one open item — the live Claude API path was fixed but not yet exercised against a real key in this environment).
+This project was built with Claude Code as a coding assistant, across two sessions. See **[AGENT_USAGE.md](AGENT_USAGE.md)** for the full account: tools used, representative prompts, what was delegated, mistakes it made and how they were caught, and what has and hasn't been independently verified yet.
 
 ## Known limitations
 
